@@ -1,0 +1,28 @@
+name: Commodity Price Tracker
+
+on:
+  schedule:
+    # 6 PM Bangkok Time (11:00 UTC on Friday)
+    - cron: '0 11 * * 5'  
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  fetch-prices:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run Price Tracker
+      env:
+        GOOGLE_SHEETS_CREDENTIALS: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS }}
+      run: python commodity_price_tracker.py
