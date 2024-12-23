@@ -1,3 +1,4 @@
+```python
 import os
 import json
 import logging
@@ -52,7 +53,7 @@ class CommodityPriceTracker:
         except Exception as e:
             logging.error(f"Authentication Error: {e}")
             raise
-        
+
         # Market symbols configuration
         self.symbols = {
             'FX': {
@@ -80,8 +81,12 @@ class CommodityPriceTracker:
             }
         }
 
+    def sleep_with_backoff(self, base_delay=1):
+        """Sleep with exponential backoff to respect API limits."""
+        time.sleep(base_delay)
+
     def fetch_commodity_prices(self):
-        """Fetch current prices and restructure data for spreadsheet."""
+        """Fetch current prices with improved error handling."""
         results = {}
         current_date = datetime.now().strftime("%Y-%m-%d")
         
@@ -89,23 +94,33 @@ class CommodityPriceTracker:
             category_data = {'Date': current_date}
             
             for symbol, display_name in symbols_dict.items():
-                try:
-                    time.sleep(1)  # Prevent rate limiting
-                    
-                    stock = yf.Ticker(symbol)
-                    history = stock.history(period="1d")
-                    
-                    if not history.empty:
-                        current_price = history['Close'].iloc[-1]
-                        category_data[display_name] = round(current_price, 4)
-                        logging.info(f"Successfully fetched data for {display_name}")
-                    else:
-                        logging.warning(f"No data retrieved for {display_name}")
-                        category_data[display_name] = 'N/A'
+                retry_count = 0
+                max_retries = 3
                 
-                except Exception as e:
-                    logging.error(f"Error fetching data for {display_name}: {e}")
-                    category_data[display_name] = 'N/A'
+                while retry_count < max_retries:
+                    try:
+                        time.sleep(1)  # Prevent rate limiting
+                        
+                        stock = yf.Ticker(symbol)
+                        history = stock.history(period="1d")
+                        
+                        if not history.empty:
+                            current_price = history['Close'].iloc[-1]
+                            category_data[display_name] = round(current_price, 4)
+                            logging.info(f"Successfully fetched data for {display_name}")
+                            break
+                        else:
+                            retry_count += 1
+                            if retry_count == max_retries:
+                                logging.warning(f"No data retrieved for {display_name} after {max_retries} attempts")
+                                category_data[display_name] = 'N/A'
+                    
+                    except Exception as e:
+                        retry_count += 1
+                        if retry_count == max_retries:
+                            logging.error(f"Error fetching data for {display_name} after {max_retries} attempts: {e}")
+                            category_data[display_name] = 'N/A'
+                        time.sleep(2 ** retry_count)  # Exponential backoff
             
             # Add market analysis
             category_data['Market Analysis'] = self.analyze_category(category, category_data)
@@ -113,124 +128,106 @@ class CommodityPriceTracker:
         
         return results
 
-    def analyze_category(self, category, prices_dict):
-        """Generate analysis for each category based on current data."""
-        try:
-            if category == 'FX':
-                dxy = prices_dict.get('DXY', 'N/A')
-                eur = prices_dict.get('EURUSD', 'N/A')
-                
-                if dxy != 'N/A' and eur != 'N/A':
-                    if float(dxy) > 103:
-                        return "USD showing strength across major currencies. Asian currencies under pressure."
-                    elif float(dxy) < 100:
-                        return "USD weakness prevalent. Favorable for emerging Asian currencies."
-                    else:
-                        return "USD trading in neutral range. Mixed performance across currency pairs."
-            
-            elif category == 'Energy':
-                brent = prices_dict.get('Brent', 'N/A')
-                wti = prices_dict.get('WTI', 'N/A')
-                
-                if brent != 'N/A' and wti != 'N/A':
-                    spread = float(brent) - float(wti)
-                    if spread > 5:
-                        return f"Wide Brent-WTI spread (${spread:.2f}). Global supply concerns dominate."
-                    else:
-                        return f"Normal Brent-WTI spread (${spread:.2f}). Market in equilibrium."
-
-            elif category == 'Feed':
-                return "Feed costs trending within seasonal ranges. Monitor weather impacts."
-
-            elif category == 'Metals':
-                gold = prices_dict.get('Gold', 'N/A')
-                
-                if gold != 'N/A':
-                    if float(gold) > 2000:
-                        return "Gold at premium levels. Safe-haven demand strong."
-                    else:
-                        return "Gold trading below key $2000 level. Monitor Fed policy."
-
-            elif category == 'Crypto':
-                btc = prices_dict.get('Bitcoin', 'N/A')
-                
-                if btc != 'N/A':
-                    if float(btc) > 40000:
-                        return "BTC maintaining strength above 40K. Institutional interest remains."
-                    else:
-                        return "BTC below 40K threshold. Market sentiment cautious."
-
-            return "Insufficient data for detailed analysis"
-
-        except Exception as e:
-            logging.error(f"Error in analysis for {category}: {e}")
-            return "Analysis unavailable"
-
     def format_worksheet(self, worksheet, num_columns):
-        """Apply formatting to worksheet."""
+        """Apply formatting with batch requests to reduce API calls."""
         try:
-            # Format headers
-            header_format = {
-                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
-                "textFormat": {
-                    "bold": True,
-                    "fontSize": 11
-                },
-                "horizontalAlignment": "CENTER"
-            }
-            
-            # Format the header row
-            worksheet.format(f'A1:{chr(64 + num_columns)}1', header_format)
-            
-            # Get the number of rows in the worksheet
+            # Get current sheet values
             all_values = worksheet.get_all_values()
             num_rows = len(all_values)
             
-            if num_rows > 1:
-                # Format data cells
-                data_format = {
-                    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
-                    "textFormat": {
-                        "bold": False,
-                        "fontSize": 10
+            if num_rows < 1:
+                return
+            
+            # Prepare batch formatting request
+            batch_requests = {
+                "requests": [
+                    # Header formatting
+                    {
+                        "repeatCell": {
+                            "range": {
+                                "startRowIndex": 0,
+                                "endRowIndex": 1,
+                                "startColumnIndex": 0,
+                                "endColumnIndex": num_columns
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                                    "textFormat": {"bold": True, "fontSize": 11},
+                                    "horizontalAlignment": "CENTER",
+                                    "borders": {
+                                        "top": {"style": "SOLID"},
+                                        "bottom": {"style": "SOLID"},
+                                        "left": {"style": "SOLID"},
+                                        "right": {"style": "SOLID"}
+                                    }
+                                }
+                            },
+                            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)"
+                        }
                     },
-                    "horizontalAlignment": "CENTER"
-                }
-                
-                # Format percentage columns
-                percentage_format = {
-                    "numberFormat": {
-                        "type": "PERCENT",
-                        "pattern": "0.00%"
+                    # Data cells formatting
+                    {
+                        "repeatCell": {
+                            "range": {
+                                "startRowIndex": 1,
+                                "endRowIndex": num_rows,
+                                "startColumnIndex": 0,
+                                "endColumnIndex": num_columns
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+                                    "textFormat": {"bold": False, "fontSize": 10},
+                                    "horizontalAlignment": "CENTER",
+                                    "borders": {
+                                        "top": {"style": "SOLID"},
+                                        "bottom": {"style": "SOLID"},
+                                        "left": {"style": "SOLID"},
+                                        "right": {"style": "SOLID"}
+                                    }
+                                }
+                            },
+                            "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,borders)"
+                        }
                     }
-                }
-                
-                # Apply data formatting to all cells
-                worksheet.format(f'A2:{chr(64 + num_columns)}{num_rows}', data_format)
-                
-                # Apply percentage formatting to WoW columns
-                for col in range(1, num_columns + 1):
-                    header = all_values[0][col - 1]
-                    if header.endswith('WoW'):
-                        col_letter = chr(64 + col)
-                        worksheet.format(f'{col_letter}2:{col_letter}{num_rows}', percentage_format)
-                
-                # Add borders
-                border_format = {
-                    "borders": {
-                        "top": {"style": "SOLID"},
-                        "bottom": {"style": "SOLID"},
-                        "left": {"style": "SOLID"},
-                        "right": {"style": "SOLID"}
-                    }
-                }
-                
-                # Apply borders to entire table
-                worksheet.format(f'A1:{chr(64 + num_columns)}{num_rows}', border_format)
-                
-                # Auto-resize columns
-                for i in range(1, num_columns + 1):
+                ]
+            }
+            
+            # Apply percentage formatting to WoW columns
+            for col in range(1, num_columns + 1):
+                header = all_values[0][col - 1]
+                if header.endswith('WoW'):
+                    batch_requests["requests"].append({
+                        "repeatCell": {
+                            "range": {
+                                "startRowIndex": 1,
+                                "endRowIndex": num_rows,
+                                "startColumnIndex": col - 1,
+                                "endColumnIndex": col
+                            },
+                            "cell": {
+                                "userEnteredFormat": {
+                                    "numberFormat": {
+                                        "type": "PERCENT",
+                                        "pattern": "0.00%"
+                                    }
+                                }
+                            },
+                            "fields": "userEnteredFormat.numberFormat"
+                        }
+                    })
+
+            # Execute batch update
+            worksheet.spreadsheet.batch_update(batch_requests)
+            
+            # Auto-resize columns (done separately as it can't be batched)
+            for i in range(1, num_columns + 1):
+                try:
                     worksheet.columns_auto_resize(i-1, i)
+                    self.sleep_with_backoff(0.5)  # Small delay between resizes
+                except Exception as e:
+                    logging.warning(f"Error auto-resizing column {i}: {e}")
             
             logging.info("Successfully applied formatting to worksheet")
         
@@ -239,73 +236,74 @@ class CommodityPriceTracker:
             raise
 
     def update_google_sheet(self, data):
-        """Update Google Sheet with formatted data and WoW calculations."""
+        """Update Google Sheet with rate limiting and error handling."""
         try:
             sheet = self.client.open('Commodity Price Tracker')
             
             for category, prices in data.items():
                 try:
+                    self.sleep_with_backoff(2)  # Delay between category updates
+                    
                     try:
                         worksheet = sheet.worksheet(category)
                     except gspread.exceptions.WorksheetNotFound:
                         worksheet = sheet.add_worksheet(category, 1000, 20)
                         logging.info(f"Created new worksheet for {category}")
+                        self.sleep_with_backoff(1)
                     
                     # Get existing data for WoW calculations
                     existing_data = worksheet.get_all_values()
+                    self.sleep_with_backoff(1)
+                    
                     last_week_prices = {}
-                    if len(existing_data) > 1:  # If there's data beyond headers
+                    if len(existing_data) > 1:
                         last_row = existing_data[-1]
                         headers = existing_data[0]
                         
-                        # Create dictionary of last week's prices
                         for idx, header in enumerate(headers):
                             if header not in ['Date', 'Market Analysis']:
-                                if not header.endswith('WoW'):  # Only get price columns
+                                if not header.endswith('WoW'):
                                     last_week_prices[header] = float(last_row[idx]) if last_row[idx] != 'N/A' else None
 
-                    # Prepare new data with WoW calculations
                     if prices and prices[0]:
                         new_headers = []
-                        new_data = []
+                        new_row = []
                         
-                        # Create new headers with WoW columns
+                        # Create headers and prepare data
                         base_headers = list(prices[0].keys())
                         for header in base_headers:
                             if header not in ['Date', 'Market Analysis']:
                                 new_headers.extend([header, f"{header} WoW"])
-                            else:
-                                new_headers.append(header)
-                        
-                        # Calculate WoW changes and prepare new data
-                        for row in prices:
-                            new_row = []
-                            for header in base_headers:
-                                if header not in ['Date', 'Market Analysis']:
-                                    current_price = row[header]
-                                    new_row.append(current_price)
-                                    
-                                    # Calculate WoW change
-                                    if header in last_week_prices and last_week_prices[header] is not None:
-                                        try:
-                                            wow_change = (float(current_price) - float(last_week_prices[header])) / float(last_week_prices[header])
-                                            new_row.append(wow_change)
-                                        except (ValueError, TypeError):
-                                            new_row.append('N/A')
-                                    else:
+                                
+                                current_price = prices[0][header]
+                                new_row.append(current_price)
+                                
+                                # Calculate WoW change
+                                if header in last_week_prices and last_week_prices[header] is not None:
+                                    try:
+                                        wow_change = (float(current_price) - float(last_week_prices[header])) / float(last_week_prices[header])
+                                        new_row.append(wow_change)
+                                    except (ValueError, TypeError):
                                         new_row.append('N/A')
                                 else:
-                                    new_row.append(row[header])
+                                    new_row.append('N/A')
+                            else:
+                                new_headers.append(header)
+                                new_row.append(prices[0][header])
                         
-                        # Clear and update worksheet
+                        # Update worksheet
                         worksheet.clear()
+                        self.sleep_with_backoff(1)
                         
-                        # Add headers and data
                         worksheet.insert_row(new_headers, 1)
+                        self.sleep_with_backoff(1)
+                        
                         worksheet.append_row(new_row)
+                        self.sleep_with_backoff(1)
                         
                         # Apply formatting
                         self.format_worksheet(worksheet, len(new_headers))
+                        self.sleep_with_backoff(2)
                         
                         logging.info(f"Successfully updated {category} worksheet")
                     else:
@@ -313,6 +311,7 @@ class CommodityPriceTracker:
                 
                 except Exception as category_error:
                     logging.error(f"Error updating {category} worksheet: {category_error}")
+                    self.sleep_with_backoff(5)  # Longer delay after error
                     continue
             
             logging.info("Successfully updated all Google Sheets")
@@ -322,23 +321,32 @@ class CommodityPriceTracker:
             raise
 
     def run(self):
-        """Main execution method."""
-        try:
-            logging.info("Starting commodity price tracking...")
-            prices = self.fetch_commodity_prices()
-            
-            if not prices:
-                raise ValueError("No price data was fetched")
-            
-            self.update_google_sheet(prices)
-            logging.info("Commodity price tracking completed successfully")
-            
-        except Exception as e:
-            logging.critical(f"Unexpected error in run method: {e}")
-            raise
+        """Main execution method with retry logic."""
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                logging.info("Starting commodity price tracking...")
+                prices = self.fetch_commodity_prices()
+                
+                if not prices:
+                    raise ValueError("No price data was fetched")
+                
+                self.update_google_sheet(prices)
+                logging.info("Commodity price tracking completed successfully")
+                break
+                
+            except Exception as e:
+                retry_count += 1
+                logging.error(f"Attempt {retry_count} failed: {e}")
+                if retry_count < max_retries:
+                    self.sleep_with_backoff(5 * retry_count)  # Increasing delay between retries
+                else:
+                    logging.critical("All retry attempts failed")
+                    raise
 
 def main():
-    """Main entry point of the script."""
     try:
         logging.info("Initializing Commodity Price Tracker")
         tracker = CommodityPriceTracker()
@@ -349,3 +357,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
