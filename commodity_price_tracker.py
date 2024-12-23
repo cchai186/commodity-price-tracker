@@ -91,6 +91,7 @@ class CommodityPriceTracker:
         
         for category, symbols_dict in self.symbols.items():
             category_data = {'Date': current_date}
+            price_data = {}
             
             for symbol, display_name in symbols_dict.items():
                 retry_count = 0
@@ -105,7 +106,9 @@ class CommodityPriceTracker:
                         
                         if not history.empty:
                             current_price = history['Close'].iloc[-1]
-                            category_data[display_name] = round(current_price, 4)
+                            price = round(current_price, 4)
+                            category_data[display_name] = price
+                            price_data[display_name] = price
                             logging.info(f"Successfully fetched data for {display_name}")
                             break
                         else:
@@ -113,16 +116,65 @@ class CommodityPriceTracker:
                             if retry_count == max_retries:
                                 logging.warning(f"No data retrieved for {display_name} after {max_retries} attempts")
                                 category_data[display_name] = 'N/A'
+                                price_data[display_name] = 'N/A'
                     
                     except Exception as e:
                         retry_count += 1
                         if retry_count == max_retries:
                             logging.error(f"Error fetching data for {display_name} after {max_retries} attempts: {e}")
                             category_data[display_name] = 'N/A'
+                            price_data[display_name] = 'N/A'
                         time.sleep(2 ** retry_count)  # Exponential backoff
             
             # Add market analysis
-            category_data['Market Analysis'] = self.analyze_category(category, category_data)
+            if category == 'FX':
+                if price_data.get('DXY', 'N/A') != 'N/A':
+                    dxy_price = float(price_data['DXY'])
+                    if dxy_price > 103:
+                        analysis = "USD showing strength across major currencies"
+                    elif dxy_price < 100:
+                        analysis = "USD weakness prevalent"
+                    else:
+                        analysis = "USD trading in neutral range"
+                else:
+                    analysis = "Insufficient data for analysis"
+                
+            elif category == 'Energy':
+                brent = price_data.get('Brent', 'N/A')
+                wti = price_data.get('WTI', 'N/A')
+                if brent != 'N/A' and wti != 'N/A':
+                    spread = float(brent) - float(wti)
+                    analysis = f"Brent-WTI spread: ${spread:.2f}"
+                else:
+                    analysis = "Insufficient data for analysis"
+                
+            elif category == 'Feed':
+                analysis = "Monitor weather impacts on feed costs"
+                
+            elif category == 'Metals':
+                gold = price_data.get('Gold', 'N/A')
+                if gold != 'N/A':
+                    if float(gold) > 2000:
+                        analysis = "Gold trading above $2000"
+                    else:
+                        analysis = "Gold trading below $2000"
+                else:
+                    analysis = "Insufficient data for analysis"
+                
+            elif category == 'Crypto':
+                btc = price_data.get('Bitcoin', 'N/A')
+                if btc != 'N/A':
+                    if float(btc) > 40000:
+                        analysis = "BTC above 40K threshold"
+                    else:
+                        analysis = "BTC below 40K threshold"
+                else:
+                    analysis = "Insufficient data for analysis"
+            
+            else:
+                analysis = "No analysis available"
+            
+            category_data['Market Analysis'] = analysis
             results[category] = [category_data]
         
         return results
@@ -353,6 +405,3 @@ def main():
     except Exception as e:
         logging.critical(f"Failed to initialize or run tracker: {e}")
         raise
-
-if __name__ == "__main__":
-    main()
