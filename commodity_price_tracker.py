@@ -80,6 +80,10 @@ class CommodityPriceTracker:
             }
         }
 
+    def sleep_with_backoff(self, base_delay=1):
+        """Sleep with exponential backoff to respect API limits."""
+        time.sleep(base_delay)
+
     def fetch_commodity_prices(self):
         """Fetch current prices."""
         results = {}
@@ -111,6 +115,50 @@ class CommodityPriceTracker:
         
         return results
 
+    def format_worksheet(self, worksheet, num_columns):
+        """Apply basic formatting to worksheet."""
+        try:
+            # Format headers
+            header_format = {
+                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                "textFormat": {"bold": True},
+                "horizontalAlignment": "CENTER",
+                "borders": {
+                    "top": {"style": "SOLID"},
+                    "bottom": {"style": "SOLID"},
+                    "left": {"style": "SOLID"},
+                    "right": {"style": "SOLID"}
+                }
+            }
+            
+            worksheet.format(f'A1:{chr(64 + num_columns)}1', header_format)
+            time.sleep(2)
+            
+            # Get the number of rows
+            all_values = worksheet.get_all_values()
+            num_rows = len(all_values)
+            
+            if num_rows > 1:
+                # Format data cells
+                data_format = {
+                    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+                    "horizontalAlignment": "CENTER",
+                    "borders": {
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"}
+                    }
+                }
+                
+                worksheet.format(f'A2:{chr(64 + num_columns)}{num_rows}', data_format)
+                time.sleep(2)
+            
+            logging.info("Successfully formatted worksheet")
+            
+        except Exception as e:
+            logging.error(f"Error formatting worksheet: {e}")
+
     def update_google_sheet(self, data):
         """Update Google Sheet with data."""
         try:
@@ -138,27 +186,43 @@ class CommodityPriceTracker:
                         for idx, header in enumerate(headers):
                             if header not in ['Date']:
                                 if not header.endswith('WoW'):
-                                    last_week_prices[header] = float(last_row[idx]) if last_row[idx] != 'N/A' else None
+                                    try:
+                                        # Only store numeric values for WoW calculation
+                                        value = last_row[idx]
+                                        float_value = float(value) if value != 'N/A' else None
+                                        last_week_prices[header] = float_value
+                                    except ValueError:
+                                        last_week_prices[header] = None
 
                     if prices and prices[0]:
                         new_headers = ['Date']
                         new_row = [prices[0]['Date']]
                         
-                        # Create headers and prepare data
+                        # Process each value in the current data
                         for key, value in prices[0].items():
                             if key != 'Date':
-                                new_headers.extend([key, f"{key} WoW"])
-                                new_row.append(value)
-                                
-                                # Calculate WoW change
-                                if key in last_week_prices and last_week_prices[key] is not None and value != 'N/A':
-                                    try:
-                                        wow_change = (float(value) - float(last_week_prices[key])) / float(last_week_prices[key])
-                                        new_row.append(wow_change)
-                                    except (ValueError, TypeError):
-                                        new_row.append('N/A')
-                                else:
-                                    new_row.append('N/A')
+                                try:
+                                    # Try to convert to float for price values
+                                    float_value = float(value) if value != 'N/A' else None
+                                    
+                                    # Add price column
+                                    new_headers.append(key)
+                                    new_row.append(value)
+                                    
+                                    # Add WoW column if it's a numeric value
+                                    if float_value is not None:
+                                        new_headers.append(f"{key} WoW")
+                                        # Calculate WoW change
+                                        if key in last_week_prices and last_week_prices[key] is not None:
+                                            wow_change = (float_value - last_week_prices[key]) / last_week_prices[key]
+                                            new_row.append(wow_change)
+                                        else:
+                                            new_row.append('N/A')
+                                            
+                                except ValueError:
+                                    # For non-numeric values, just add the value without WoW
+                                    new_headers.append(key)
+                                    new_row.append(value)
                         
                         # Update worksheet
                         worksheet.clear()
@@ -170,26 +234,21 @@ class CommodityPriceTracker:
                         worksheet.append_row(new_row)
                         time.sleep(2)
                         
-                        # Format the sheet
-                        num_columns = len(new_headers)
-                        
-                        # Format headers
-                        header_format = {
-                            "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
-                            "textFormat": {"bold": True},
-                            "horizontalAlignment": "CENTER"
-                        }
-                        worksheet.format(f'A1:{chr(64 + num_columns)}1', header_format)
-                        time.sleep(2)
+                        # Apply basic formatting
+                        self.format_worksheet(worksheet, len(new_headers))
                         
                         # Format WoW columns as percentages
-                        for col in range(1, num_columns + 1):
+                        for col in range(1, len(new_headers) + 1):
                             header = new_headers[col - 1]
                             if header.endswith('WoW'):
                                 col_letter = chr(64 + col)
                                 worksheet.format(f'{col_letter}2', {
-                                    "numberFormat": {"type": "PERCENT", "pattern": "0.00%"}
+                                    "numberFormat": {
+                                        "type": "PERCENT",
+                                        "pattern": "0.00%"
+                                    }
                                 })
+                                time.sleep(1)
                         
                         logging.info(f"Successfully updated {category} worksheet")
                     else:
