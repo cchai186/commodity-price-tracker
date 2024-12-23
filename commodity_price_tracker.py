@@ -33,6 +33,7 @@ class CommodityPriceTracker:
                 except FileNotFoundError:
                     raise ValueError("No credentials found in environment or service_account.json")
             
+            # Parse JSON credentials
             creds_dict = json.loads(creds_json)
             
             self.scope = [
@@ -52,6 +53,7 @@ class CommodityPriceTracker:
             logging.error(f"Authentication Error: {e}")
             raise
         
+        # Market symbols configuration
         self.symbols = {
             'FX': {
                 'DX-Y.NYB': 'DXY',
@@ -78,45 +80,73 @@ class CommodityPriceTracker:
             }
         }
 
+    def fetch_commodity_prices(self):
+        """Fetch current prices and restructure data for spreadsheet."""
+        results = {}
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        
+        for category, symbols_dict in self.symbols.items():
+            category_data = {'Date': current_date}
+            
+            for symbol, display_name in symbols_dict.items():
+                try:
+                    time.sleep(1)  # Prevent rate limiting
+                    
+                    stock = yf.Ticker(symbol)
+                    history = stock.history(period="1d")
+                    
+                    if not history.empty:
+                        current_price = history['Close'].iloc[-1]
+                        category_data[display_name] = round(current_price, 4)
+                        logging.info(f"Successfully fetched data for {display_name}")
+                    else:
+                        logging.warning(f"No data retrieved for {display_name}")
+                        category_data[display_name] = 'N/A'
+                
+                except Exception as e:
+                    logging.error(f"Error fetching data for {display_name}: {e}")
+                    category_data[display_name] = 'N/A'
+            
+            # Add market analysis
+            category_data['Market Analysis'] = self.analyze_category(category, category_data)
+            results[category] = [category_data]
+        
+        return results
+
     def analyze_category(self, category, prices_dict):
-        """Generate analysis for each category based on current and historical data."""
+        """Generate analysis for each category based on current data."""
         try:
             if category == 'FX':
                 dxy = prices_dict.get('DXY', 'N/A')
                 eur = prices_dict.get('EURUSD', 'N/A')
                 
                 if dxy != 'N/A' and eur != 'N/A':
-                    if dxy > 103:
+                    if float(dxy) > 103:
                         return "USD showing strength across major currencies. Asian currencies under pressure."
-                    elif dxy < 100:
+                    elif float(dxy) < 100:
                         return "USD weakness prevalent. Favorable for emerging Asian currencies."
                     else:
                         return "USD trading in neutral range. Mixed performance across currency pairs."
-                
+            
             elif category == 'Energy':
                 brent = prices_dict.get('Brent', 'N/A')
                 wti = prices_dict.get('WTI', 'N/A')
                 
                 if brent != 'N/A' and wti != 'N/A':
-                    spread = brent - wti
+                    spread = float(brent) - float(wti)
                     if spread > 5:
                         return f"Wide Brent-WTI spread (${spread:.2f}). Global supply concerns dominate."
                     else:
                         return f"Normal Brent-WTI spread (${spread:.2f}). Market in equilibrium."
 
             elif category == 'Feed':
-                corn = prices_dict.get('Corn', 'N/A')
-                soybean = prices_dict.get('Soybean', 'N/A')
-                
-                if corn != 'N/A' and soybean != 'N/A':
-                    return f"Feed costs trending within seasonal ranges. Monitor weather impacts."
+                return "Feed costs trending within seasonal ranges. Monitor weather impacts."
 
             elif category == 'Metals':
                 gold = prices_dict.get('Gold', 'N/A')
-                silver = prices_dict.get('Silver', 'N/A')
                 
                 if gold != 'N/A':
-                    if gold > 2000:
+                    if float(gold) > 2000:
                         return "Gold at premium levels. Safe-haven demand strong."
                     else:
                         return "Gold trading below key $2000 level. Monitor Fed policy."
@@ -125,7 +155,7 @@ class CommodityPriceTracker:
                 btc = prices_dict.get('Bitcoin', 'N/A')
                 
                 if btc != 'N/A':
-                    if btc > 40000:
+                    if float(btc) > 40000:
                         return "BTC maintaining strength above 40K. Institutional interest remains."
                     else:
                         return "BTC below 40K threshold. Market sentiment cautious."
@@ -136,45 +166,80 @@ class CommodityPriceTracker:
             logging.error(f"Error in analysis for {category}: {e}")
             return "Analysis unavailable"
 
-    def fetch_commodity_prices(self):
-        """Fetch current prices and add analysis."""
-        results = {}
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        
-        for category, symbols_dict in self.symbols.items():
-            category_data = {'Date': current_date}
-            price_data = {}
+    def format_worksheet(self, worksheet, num_columns):
+        """Apply formatting to worksheet."""
+        try:
+            # Format headers
+            header_format = {
+                "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9},
+                "textFormat": {
+                    "bold": True,
+                    "fontSize": 11
+                },
+                "horizontalAlignment": "CENTER"
+            }
             
-            for symbol, display_name in symbols_dict.items():
-                try:
-                    time.sleep(1)
-                    
-                    stock = yf.Ticker(symbol)
-                    history = stock.history(period="1d")
-                    
-                    if not history.empty:
-                        current_price = history['Close'].iloc[-1]
-                        category_data[display_name] = round(current_price, 4)
-                        price_data[display_name] = round(current_price, 4)
-                        logging.info(f"Successfully fetched data for {display_name}")
-                    else:
-                        logging.warning(f"No data retrieved for {display_name}")
-                        category_data[display_name] = 'N/A'
-                        price_data[display_name] = 'N/A'
+            # Format the header row
+            worksheet.format(f'A1:{chr(64 + num_columns)}1', header_format)
+            
+            # Get the number of rows in the worksheet
+            all_values = worksheet.get_all_values()
+            num_rows = len(all_values)
+            
+            if num_rows > 1:
+                # Format data cells
+                data_format = {
+                    "backgroundColor": {"red": 1, "green": 1, "blue": 1},
+                    "textFormat": {
+                        "bold": False,
+                        "fontSize": 10
+                    },
+                    "horizontalAlignment": "CENTER"
+                }
                 
-                except Exception as e:
-                    logging.error(f"Error fetching data for {display_name}: {e}")
-                    category_data[display_name] = 'N/A'
-                    price_data[display_name] = 'N/A'
+                # Format percentage columns
+                percentage_format = {
+                    "numberFormat": {
+                        "type": "PERCENT",
+                        "pattern": "0.00%"
+                    }
+                }
+                
+                # Apply data formatting to all cells
+                worksheet.format(f'A2:{chr(64 + num_columns)}{num_rows}', data_format)
+                
+                # Apply percentage formatting to WoW columns
+                for col in range(1, num_columns + 1):
+                    header = all_values[0][col - 1]
+                    if header.endswith('WoW'):
+                        col_letter = chr(64 + col)
+                        worksheet.format(f'{col_letter}2:{col_letter}{num_rows}', percentage_format)
+                
+                # Add borders
+                border_format = {
+                    "borders": {
+                        "top": {"style": "SOLID"},
+                        "bottom": {"style": "SOLID"},
+                        "left": {"style": "SOLID"},
+                        "right": {"style": "SOLID"}
+                    }
+                }
+                
+                # Apply borders to entire table
+                worksheet.format(f'A1:{chr(64 + num_columns)}{num_rows}', border_format)
+                
+                # Auto-resize columns
+                for i in range(1, num_columns + 1):
+                    worksheet.columns_auto_resize(i-1, i)
             
-            # Add analysis as the last column
-            category_data['Market Analysis'] = self.analyze_category(category, price_data)
-            results[category] = [category_data]
+            logging.info("Successfully applied formatting to worksheet")
         
-        return results
+        except Exception as e:
+            logging.error(f"Error applying worksheet formatting: {e}")
+            raise
 
     def update_google_sheet(self, data):
-        """Update Google Sheet with prices and analysis."""
+        """Update Google Sheet with formatted data and WoW calculations."""
         try:
             sheet = self.client.open('Commodity Price Tracker')
             
@@ -186,24 +251,61 @@ class CommodityPriceTracker:
                         worksheet = sheet.add_worksheet(category, 1000, 20)
                         logging.info(f"Created new worksheet for {category}")
                     
-                    worksheet.clear()
-                    
+                    # Get existing data for WoW calculations
+                    existing_data = worksheet.get_all_values()
+                    last_week_prices = {}
+                    if len(existing_data) > 1:  # If there's data beyond headers
+                        last_row = existing_data[-1]
+                        headers = existing_data[0]
+                        
+                        # Create dictionary of last week's prices
+                        for idx, header in enumerate(headers):
+                            if header not in ['Date', 'Market Analysis']:
+                                if not header.endswith('WoW'):  # Only get price columns
+                                    last_week_prices[header] = float(last_row[idx]) if last_row[idx] != 'N/A' else None
+
+                    # Prepare new data with WoW calculations
                     if prices and prices[0]:
-                        headers = list(prices[0].keys())
-                        worksheet.insert_row(headers, 1)
+                        new_headers = []
+                        new_data = []
                         
-                        # Format headers
-                        worksheet.format('A1:Z1', {
-                            'backgroundColor': {'red': 0.8, 'green': 0.8, 'blue': 0.8},
-                            'textFormat': {'bold': True}
-                        })
+                        # Create new headers with WoW columns
+                        base_headers = list(prices[0].keys())
+                        for header in base_headers:
+                            if header not in ['Date', 'Market Analysis']:
+                                new_headers.extend([header, f"{header} WoW"])
+                            else:
+                                new_headers.append(header)
                         
-                        # Add data rows
+                        # Calculate WoW changes and prepare new data
                         for row in prices:
-                            worksheet.append_row(list(row.values()))
+                            new_row = []
+                            for header in base_headers:
+                                if header not in ['Date', 'Market Analysis']:
+                                    current_price = row[header]
+                                    new_row.append(current_price)
+                                    
+                                    # Calculate WoW change
+                                    if header in last_week_prices and last_week_prices[header] is not None:
+                                        try:
+                                            wow_change = (float(current_price) - float(last_week_prices[header])) / float(last_week_prices[header])
+                                            new_row.append(wow_change)
+                                        except (ValueError, TypeError):
+                                            new_row.append('N/A')
+                                    else:
+                                        new_row.append('N/A')
+                                else:
+                                    new_row.append(row[header])
                         
-                        # Adjust column widths for better readability
-                        worksheet.columns_auto_resize(0, len(headers))
+                        # Clear and update worksheet
+                        worksheet.clear()
+                        
+                        # Add headers and data
+                        worksheet.insert_row(new_headers, 1)
+                        worksheet.append_row(new_row)
+                        
+                        # Apply formatting
+                        self.format_worksheet(worksheet, len(new_headers))
                         
                         logging.info(f"Successfully updated {category} worksheet")
                     else:
@@ -236,6 +338,7 @@ class CommodityPriceTracker:
             raise
 
 def main():
+    """Main entry point of the script."""
     try:
         logging.info("Initializing Commodity Price Tracker")
         tracker = CommodityPriceTracker()
