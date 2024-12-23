@@ -84,6 +84,55 @@ class CommodityPriceTracker:
         """Sleep with exponential backoff to respect API limits."""
         time.sleep(base_delay)
 
+    def generate_market_commentary(self, category, price_data):
+        """Generate market commentary for each category."""
+        try:
+            if category == 'FX':
+                dxy = price_data.get('DXY', 'N/A')
+                if dxy != 'N/A':
+                    if float(dxy) > 103:
+                        return "USD showing strength across major currencies. Asian currencies under pressure."
+                    elif float(dxy) < 100:
+                        return "USD weakness prevalent. Favorable for emerging Asian currencies."
+                    else:
+                        return "USD trading in neutral range. Mixed performance across currency pairs."
+                
+            elif category == 'Energy':
+                brent = price_data.get('Brent', 'N/A')
+                wti = price_data.get('WTI', 'N/A')
+                if brent != 'N/A' and wti != 'N/A':
+                    spread = float(brent) - float(wti)
+                    return f"Brent-WTI spread at ${spread:.2f}. " + \
+                           ("Wide spread indicating supply constraints." if spread > 5 else "Normal market conditions.")
+                
+            elif category == 'Feed':
+                corn = price_data.get('Corn', 'N/A')
+                soybean = price_data.get('Soybean', 'N/A')
+                if corn != 'N/A' and soybean != 'N/A':
+                    return "Feed costs trending within seasonal ranges. Monitor weather impacts."
+                
+            elif category == 'Metals':
+                gold = price_data.get('Gold', 'N/A')
+                if gold != 'N/A':
+                    if float(gold) > 2000:
+                        return "Gold trading above $2,000, indicating strong safe-haven demand."
+                    else:
+                        return "Gold below $2,000. Monitor Fed policy and macro risks."
+                
+            elif category == 'Crypto':
+                btc = price_data.get('Bitcoin', 'N/A')
+                if btc != 'N/A':
+                    if float(btc) > 40000:
+                        return "BTC maintaining strength above $40K. Strong institutional flows."
+                    else:
+                        return "BTC below $40K. Market sentiment cautious."
+            
+            return "Insufficient data for market commentary"
+        
+        except Exception as e:
+            logging.error(f"Error generating commentary for {category}: {e}")
+            return "Market commentary unavailable"
+
     def fetch_commodity_prices(self):
         """Fetch current prices."""
         results = {}
@@ -111,6 +160,8 @@ class CommodityPriceTracker:
                     logging.error(f"Error fetching data for {display_name}: {e}")
                     category_data[display_name] = 'N/A'
             
+            # Add market commentary last
+            category_data['Market Commentary'] = self.generate_market_commentary(category, category_data)
             results[category] = [category_data]
         
         return results
@@ -184,10 +235,9 @@ class CommodityPriceTracker:
                         headers = existing_data[0]
                         
                         for idx, header in enumerate(headers):
-                            if header not in ['Date']:
+                            if header not in ['Date', 'Market Commentary']:
                                 if not header.endswith('WoW'):
                                     try:
-                                        # Only store numeric values for WoW calculation
                                         value = last_row[idx]
                                         float_value = float(value) if value != 'N/A' else None
                                         last_week_prices[header] = float_value
@@ -200,7 +250,10 @@ class CommodityPriceTracker:
                         
                         # Process each value in the current data
                         for key, value in prices[0].items():
-                            if key != 'Date':
+                            if key == 'Market Commentary':
+                                new_headers.append(key)
+                                new_row.append(value)
+                            elif key != 'Date':
                                 try:
                                     # Try to convert to float for price values
                                     float_value = float(value) if value != 'N/A' else None
@@ -249,6 +302,12 @@ class CommodityPriceTracker:
                                     }
                                 })
                                 time.sleep(1)
+                        
+                        # Adjust column widths
+                        try:
+                            worksheet.columns_auto_resize(0, len(new_headers))
+                        except Exception as e:
+                            logging.warning(f"Could not auto-resize columns: {e}")
                         
                         logging.info(f"Successfully updated {category} worksheet")
                     else:
